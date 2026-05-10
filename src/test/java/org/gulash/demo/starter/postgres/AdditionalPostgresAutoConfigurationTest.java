@@ -23,17 +23,21 @@ import static org.assertj.core.api.Assertions.assertThat;
  * списком {@link AutoConfigurations}, набором свойств и classpath, и позволяет
  * проверить — какие бины зарегистрированы, какие нет, какие условия сработали.
  *
- * <p>Эти тесты — каноническая иллюстрация «правильного» подхода к тестированию
- * стартеров.
+ * <p>Эти тесты — каноническая иллюстрация «правильного» подхода к тестированию стартеров.</p>
  */
 class AdditionalPostgresAutoConfigurationTest {
 
+    /**
+     * Основной инструмент для тестирования авто-конфигурации.
+     * Мы заранее указываем, какую именно конфигурацию (AdditionalPostgresAutoConfiguration) будем проверять.
+     */
     private final ApplicationContextRunner runner = new ApplicationContextRunner()
             .withConfiguration(AutoConfigurations.of(AdditionalPostgresAutoConfiguration.class));
 
     @Test
     void registersDataSourceAndJdbcTemplateForEachConfiguredEntry() {
         runner
+                // Настраиваем две разные БД, чтобы проверить множественную регистрацию бинов.
                 .withPropertyValues(
                         "app.datasources.dictionary.jdbc-url=jdbc:postgresql://localhost:1/dictionary",
                         "app.datasources.dictionary.username=u",
@@ -43,23 +47,25 @@ class AdditionalPostgresAutoConfigurationTest {
                         "app.datasources.history.password=p"
                 )
                 .run(ctx -> {
-                    // Бины DataSource зарегистрированы под предсказуемыми именами.
+                    // Проверяем, что для каждой записи в конфиге создались свои DataSource.
                     assertThat(ctx).hasBean("dictionaryDataSource");
                     assertThat(ctx).hasBean("historyDataSource");
                     assertThat(ctx.getBean("dictionaryDataSource")).isInstanceOf(HikariDataSource.class);
 
-                    // JdbcTemplate'ы тоже на месте.
+                    // Проверяем наличие соответствующих JdbcTemplate и NamedParameterJdbcTemplate.
                     assertThat(ctx).hasBean("dictionaryJdbcTemplate");
                     assertThat(ctx).hasBean("dictionaryNamedJdbcTemplate");
                     assertThat(ctx).hasBean("historyJdbcTemplate");
                     assertThat(ctx).hasBean("historyNamedJdbcTemplate");
 
-                    // По типу должны находиться оба DataSource.
+                    // Убеждаемся, что в контексте именно 2 бина каждого типа (для dictionary и history).
                     assertThat(ctx.getBeansOfType(DataSource.class)).hasSize(2);
                     assertThat(ctx.getBeansOfType(JdbcTemplate.class)).hasSize(2);
                     assertThat(ctx.getBeansOfType(NamedParameterJdbcTemplate.class)).hasSize(2);
 
-                    // primary НЕ должен быть установлен — иначе сломали бы основной DataSource приложения.
+                    // Важная проверка: наши дополнительные DataSource НЕ должны быть помечены как @Primary.
+                    // Если какой-то из них станет Primary, он может перехватить инъекции, предназначенные
+                    // для основной БД приложения, что приведет к трудноуловимым багам.
                     String[] primaryNames = ctx.getBeanFactory().getBeanNamesForType(DataSource.class);
                     for (String n : primaryNames) {
                         assertThat(ctx.getBeanFactory().getBeanDefinition(n).isPrimary()).isFalse();
@@ -69,6 +75,7 @@ class AdditionalPostgresAutoConfigurationTest {
 
     @Test
     void doesNothingWhenNoSourcesConfigured() {
+        // Если в свойствах пусто — стартер не должен регистрировать никакие БД.
         runner.run(ctx -> {
             assertThat(ctx.getBeansOfType(DataSource.class)).isEmpty();
         });
@@ -77,11 +84,13 @@ class AdditionalPostgresAutoConfigurationTest {
     @Test
     void failsFastWhenJdbcUrlIsMissing() {
         runner
+                // Специально "забываем" указать jdbc-url.
                 .withPropertyValues(
                         "app.datasources.broken.username=u",
                         "app.datasources.broken.password=p"
                 )
                 .run(ctx -> {
+                    // Контекст не должен подняться, если конфигурация неполная.
                     assertThat(ctx).hasFailed();
                     assertThat(ctx.getStartupFailure())
                             .isInstanceOf(AdditionalDataSourceConfigurationException.class)
@@ -92,11 +101,13 @@ class AdditionalPostgresAutoConfigurationTest {
     @Test
     void failsFastForNonPostgresUrl() {
         runner
+                // Наш стартер заточен именно под PostgreSQL.
                 .withPropertyValues(
                         "app.datasources.bad.jdbc-url=jdbc:mysql://localhost/x",
                         "app.datasources.bad.username=u"
                 )
                 .run(ctx -> {
+                    // Проверяем валидацию на уровне стартера — он должен отвергнуть MySQL URL.
                     assertThat(ctx).hasFailed();
                     assertThat(ctx.getStartupFailure())
                             .isInstanceOf(AdditionalDataSourceConfigurationException.class)
@@ -106,7 +117,7 @@ class AdditionalPostgresAutoConfigurationTest {
 
     @Test
     void healthIndicatorIsRegisteredOnlyWhenActuatorOnClasspath() {
-        // Здесь Actuator есть (он в testImplementation):
+        // Сценарий 1: Actuator присутствует в зависимостях.
         runner
                 .withPropertyValues(
                         "app.datasources.dictionary.jdbc-url=jdbc:postgresql://localhost:1/dictionary",
@@ -114,13 +125,14 @@ class AdditionalPostgresAutoConfigurationTest {
                         "app.datasources.dictionary.password=p"
                 )
                 .run(ctx -> {
+                    // HealthIndicator должен быть создан автоматически.
                     assertThat(ctx).hasBean("dictionaryDataSourceHealthIndicator");
                     assertThat(ctx.getBean("dictionaryDataSourceHealthIndicator"))
                             .isInstanceOf(HealthIndicator.class);
                 });
 
-        // А теперь «спрячем» Actuator из classpath с помощью FilteredClassLoader —
-        // health-indicator не должен регистрироваться. Это демонстрирует @ConditionalOnClass.
+        // Сценарий 2: Имитируем отсутствие Actuator в classpath.
+        // Это позволяет проверить работу @ConditionalOnClass.
         runner
                 .withClassLoader(new FilteredClassLoader("org.springframework.boot.actuate"))
                 .withPropertyValues(
@@ -129,6 +141,7 @@ class AdditionalPostgresAutoConfigurationTest {
                         "app.datasources.dictionary.password=p"
                 )
                 .run(ctx -> {
+                    // DataSource создался, а HealthIndicator — нет, так как Actuator "отсутствует".
                     assertThat(ctx).hasBean("dictionaryDataSource");
                     assertThat(ctx).doesNotHaveBean("dictionaryDataSourceHealthIndicator");
                 });

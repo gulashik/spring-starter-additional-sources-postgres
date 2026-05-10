@@ -39,6 +39,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Testcontainers
 class AdditionalPostgresIntegrationTest {
 
+    // Описываем контейнер PostgreSQL. Используем статическое поле и @Container,
+    // чтобы Testcontainers управлял его жизненным циклом (запуск перед тестами, остановка после).
     @Container
     static final PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>(
             DockerImageName.parse("postgres:16.4-alpine"))
@@ -48,8 +50,13 @@ class AdditionalPostgresIntegrationTest {
 
     @Test
     void registeredJdbcTemplateActuallyTalksToPostgres() {
+        // ApplicationContextRunner — это утилита Spring Boot для тестирования автоконфигураций.
+        // Она позволяет «на лету» создать контекст с нужными настройками.
         new ApplicationContextRunner()
+                // Указываем нашу автоконфигурацию, которую хотим проверить.
                 .withConfiguration(AutoConfigurations.of(AdditionalPostgresAutoConfiguration.class))
+                // Передаем свойства, имитируя application.yml/properties.
+                // Используем динамические параметры запущенного Testcontainers (порт, url).
                 .withPropertyValues(
                         "app.datasources.dictionary.jdbc-url=" + postgres.getJdbcUrl(),
                         "app.datasources.dictionary.username=" + postgres.getUsername(),
@@ -57,11 +64,14 @@ class AdditionalPostgresIntegrationTest {
                         "app.datasources.dictionary.maximum-pool-size=2"
                 )
                 .run(ctx -> {
+                    // Проверяем, что бин JdbcTemplate создался с правильным именем и работает.
                     JdbcTemplate jdbc = ctx.getBean("dictionaryJdbcTemplate", JdbcTemplate.class);
+                    // Выполняем реальный запрос к БД. SELECT 1 — самый простой способ проверить живое соединение.
                     Integer one = jdbc.queryForObject("SELECT 1", Integer.class);
                     assertThat(one).isEqualTo(1);
 
-                    // и убедимся, что health-indicator работает на живой БД
+                    // Убеждаемся, что наш кастомный HealthIndicator тоже зарегистрировался
+                    // и возвращает статус UP для работающей базы.
                     var health = ctx.getBean("dictionaryDataSourceHealthIndicator",
                             org.springframework.boot.actuate.health.HealthIndicator.class).health();
                     assertThat(health.getStatus().getCode()).isEqualTo("UP");
