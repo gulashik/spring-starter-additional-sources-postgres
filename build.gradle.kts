@@ -25,6 +25,7 @@ java {
 }
 
 dependencyManagement {
+    // в библиотеке/стартере, где нет плагина org.springframework.boot, BOM импортируют вручную
     imports {
         mavenBom("org.springframework.boot:spring-boot-dependencies:3.3.4")
     }
